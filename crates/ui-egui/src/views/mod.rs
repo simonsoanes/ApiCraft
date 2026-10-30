@@ -18,11 +18,22 @@ use widgets::accent_button;
 
 pub fn frame(app: &mut ApiCraftApp, ui: &mut Ui) {
     let p = pal(ui);
-    if app.prefs.sidebar_open {
+    // Below this the sidebar and the view cannot both be useful, so the sidebar
+    // folds to its rail until the window grows back. The desktop shell's minimum
+    // is 760px wide, so the threshold must sit above that to ever fire.
+    const NARROW: f32 = 860.0;
+    let avail = ui.available_width();
+    if avail >= NARROW {
+        app.sidebar_forced = false;
+    }
+    if app.prefs.sidebar_open && (avail >= NARROW || app.sidebar_forced) {
+        // A sidebar forced open in a narrow window takes a slice, not the whole
+        // loaf: the view keeps enough room to work in.
+        let max = if avail >= NARROW { 440.0 } else { (avail - 300.0).clamp(180.0, 440.0) };
         egui::Panel::left("sidebar")
             .resizable(true)
-            .default_size(272.0)
-            .size_range(220.0..=440.0)
+            .default_size(272.0_f32.min(max))
+            .size_range(180.0_f32.min(max)..=max)
             .frame(Frame::new().fill(p.sidebar).inner_margin(Margin { left: 10, right: 10, top: 12, bottom: 8 }))
             .show(ui, |ui| sidebar::show(app, ui));
     } else {
@@ -46,9 +57,15 @@ pub(crate) fn topbar(app: &mut ApiCraftApp, ui: &mut Ui, title: impl FnOnce(&mut
     let p = pal(ui);
     Frame::new().inner_margin(Margin { left: 14, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
         ui.horizontal(|ui| {
-            let tools_w = 540.0_f32.min(ui.available_width() * 0.62);
-            ui.allocate_ui_with_layout(egui::vec2(ui.available_width() - tools_w, 40.0), Layout::top_down(Align::Min), |ui| title(app, ui));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // The tool cluster wants ~540px. Give it a fair share of what there
+            // is and let it wrap rather than overflow: subtracting an unshared
+            // 540 from a narrow bar yields a negative title width, and the
+            // right-to-left layout then runs off past the left edge.
+            let avail = ui.available_width();
+            let tools_w = 540.0_f32.min(avail * 0.72).clamp(150.0, avail.max(150.0));
+            let title_w = (avail - tools_w).max(avail * 0.28);
+            ui.allocate_ui_with_layout(egui::vec2(title_w, 40.0), Layout::top_down(Align::Min), |ui| title(app, ui));
+            ui.with_layout(Layout::right_to_left(Align::Center).with_main_wrap(true), |ui| {
                 // theme
                 let dark = ui.visuals().dark_mode;
                 if widgets::icon_button(ui, if dark { icons::SUN } else { icons::MOON }, "Toggle light/dark").clicked() {

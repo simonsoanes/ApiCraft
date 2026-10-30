@@ -74,16 +74,16 @@ pub fn show(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
         let w = ui.available_width();
         egui::Panel::right("wf-results-side")
             .resizable(true)
-            .default_size(w * 0.45)
-            .size_range(320.0..=w - 360.0)
+            .default_size((w * 0.45).clamp(320.0, (w - 360.0).max(320.0)))
+            .size_range(320.0..=(w - 360.0).max(320.0))
             .frame(pane)
             .show(ui, |ui| widgets::fixed_size(ui, |ui| results(app, ui, id)));
     } else {
         let h = ui.available_height();
         egui::Panel::bottom("wf-results-below")
             .resizable(true)
-            .default_size(h * 0.45)
-            .size_range(140.0..=h - 160.0)
+            .default_size((h * 0.45).clamp(140.0, (h - 160.0).max(140.0)))
+            .size_range(140.0..=(h - 160.0).max(140.0))
             .frame(pane)
             .show(ui, |ui| widgets::fixed_size(ui, |ui| results(app, ui, id)));
     }

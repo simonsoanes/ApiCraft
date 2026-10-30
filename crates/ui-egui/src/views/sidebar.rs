@@ -26,6 +26,7 @@ pub fn show(app: &mut ApiCraftApp, ui: &mut Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if icon_button(ui, icons::CARET_DOUBLE_LEFT, "Hide sidebar").clicked() {
                 app.prefs.sidebar_open = false;
+                app.sidebar_forced = false;
             }
         });
     });
@@ -172,11 +173,11 @@ pub fn rail(app: &mut ApiCraftApp, ui: &mut Ui) {
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), Sense::click());
         logo(ui, rect);
         if resp.on_hover_text("Show the sidebar").clicked() {
-            app.prefs.sidebar_open = true;
+            show_sidebar(app);
         }
         ui.add_space(2.0);
         if rail_button(ui, icons::CARET_DOUBLE_RIGHT, "Show the sidebar", false).clicked() {
-            app.prefs.sidebar_open = true;
+            show_sidebar(app);
         }
         ui.add_space(4.0);
         if rail_button(ui, icons::PLUS, "New request (Ctrl+N)", true).clicked() {
@@ -184,14 +185,14 @@ pub fn rail(app: &mut ApiCraftApp, ui: &mut Ui) {
         }
         let n = app.catalog.collections.len();
         if rail_button(ui, icons::STACK, &format!("Collections ({n})"), false).clicked() {
-            app.prefs.sidebar_open = true;
+            show_sidebar(app);
         }
         let n = app.catalog.workflows.len();
         if rail_button(ui, icons::FLOW, &format!("Workflows ({n})"), false).clicked() {
-            app.prefs.sidebar_open = true;
+            show_sidebar(app);
         }
         if rail_button(ui, icons::MAGNIFYING_GLASS, "Filter requests", false).clicked() {
-            app.prefs.sidebar_open = true;
+            show_sidebar(app);
             app.focus_filter = true;
         }
         ui.add_space(2.0);
@@ -227,6 +228,12 @@ pub fn rail(app: &mut ApiCraftApp, ui: &mut Ui) {
             app.modal = Some(Modal::Environments { selected: None });
         }
     });
+}
+/// Reveal the full sidebar. In a narrow window that is a deliberate request, so
+/// it stays open at a reduced width until there is room for it anyway.
+fn show_sidebar(app: &mut ApiCraftApp) {
+    app.prefs.sidebar_open = true;
+    app.sidebar_forced = true;
 }
 
 /// A square icon button for the folded sidebar, with its tooltip to the side.

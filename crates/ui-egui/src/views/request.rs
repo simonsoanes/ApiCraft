@@ -68,16 +68,16 @@ pub fn show(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
         let w = ui.available_width();
         egui::Panel::right("response-side")
             .resizable(true)
-            .default_size(w * 0.47)
-            .size_range(340.0..=w - 360.0)
+            .default_size((w * 0.47).clamp(340.0, (w - 360.0).max(340.0)))
+            .size_range(340.0..=(w - 360.0).max(340.0))
             .frame(pane)
             .show(ui, |ui| widgets::fixed_size(ui, |ui| response::show(app, ui, id)));
     } else {
         let h = ui.available_height();
         egui::Panel::bottom("response-below")
             .resizable(true)
-            .default_size(h * 0.5)
-            .size_range(160.0..=h - 160.0)
+            .default_size((h * 0.5).clamp(160.0, (h - 160.0).max(160.0)))
+            .size_range(160.0..=(h - 160.0).max(160.0))
             .frame(pane)
             .show(ui, |ui| widgets::fixed_size(ui, |ui| response::show(app, ui, id)));
     }
@@ -90,7 +90,11 @@ fn urlbar(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
     let ws_live = app.ws.as_ref().map(|w| w.request_id == id && !w.closed).unwrap_or(false);
     let mut new_tab = None;
     Frame::new().inner_margin(Margin { left: 14, right: 14, top: 10, bottom: 10 }).show(ui, |ui| {
-        ui.horizontal(|ui| {
+        // Wrapped: protocol, method, the URL field, Send and Code together are
+        // wider than the view in a narrow window, and a plain horizontal lets
+        // them run off the right edge instead of starting a second row.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
             let Some(r) = app.catalog.find_request_mut(id) else { return };
             // protocol
             let mut proto = r.protocol;

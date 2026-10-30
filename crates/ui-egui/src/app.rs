@@ -192,6 +192,10 @@ pub struct ApiCraftApp {
     pub(crate) filter: String,
     /// Focus the sidebar's filter box next frame.
     pub(crate) focus_filter: bool,
+    /// The person asked for the full sidebar even though the window is too
+    /// narrow for it, so it stays open but takes a slice of the width instead
+    /// of the whole loaf. Cleared once the window is roomy again.
+    pub(crate) sidebar_forced: bool,
     pub(crate) modal: Option<Modal>,
     pub(crate) toasts: Vec<Toast>,
     pub(crate) ws: Option<WsSession>,
@@ -286,6 +290,7 @@ impl ApiCraftApp {
             expanded: HashSet::new(),
             filter: String::new(),
             focus_filter: false,
+            sidebar_forced: false,
             modal: None,
             toasts: Vec::new(),
             ws: None,

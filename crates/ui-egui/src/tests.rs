@@ -423,3 +423,116 @@ fn sidebar_menus_offer_duplicate_and_git() {
     click(&ctx, &mut app, menu_item(&ctx, "Duplicate collection"), egui::PointerButton::Primary);
     assert_eq!(app.catalog.collections.len(), before + 1);
 }
+/// One frame at a chosen window size. `frame` fixes the size because nothing in
+/// the other tests depends on it; the responsive layout does. A pass populates
+/// `prev_pass` only for the *next* pass, so settle with two before looking.
+fn frames(ctx: &egui::Context, app: &mut ApiCraftApp, w: f32, h: f32, events: Vec<egui::Event>) {
+    let raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, h))), events, ..Default::default() };
+    let mut out = ctx.run_ui(raw, |ui| app.ui(ui));
+    // No renderer here: drop the texture updates deliberately.
+    out.textures_delta.clear();
+}
+
+/// Clicks at `pos` in a window of a chosen size. `click` cannot be used for the
+/// responsive tests: it reframes at 1280px, and a frame that wide folds the
+/// forced sidebar straight back away.
+fn click_at(ctx: &egui::Context, app: &mut ApiCraftApp, w: f32, h: f32, pos: egui::Pos2) {
+    let ev = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+    frames(ctx, app, w, h, vec![egui::Event::PointerMoved(pos)]);
+    frames(ctx, app, w, h, vec![ev(true)]);
+    frames(ctx, app, w, h, vec![ev(false)]);
+    frames(ctx, app, w, h, Vec::new());
+    frames(ctx, app, w, h, Vec::new());
+}
+
+/// Is the full sidebar on screen? The button's label is an icon glyph followed
+/// by the words, so match the tail. The rail's equivalents allocate their own
+/// hit areas and register no label at all, which makes this a clean test.
+fn sidebar_is_open(ctx: &egui::Context) -> bool {
+    find_widget(ctx, |i| i.label.as_deref().is_some_and(|l| l.ends_with("New request"))).is_some()
+}
+
+/// Widgets with a labelled hit area that leaves the window sideways: content a
+/// person cannot reach without resizing. Clipped top or bottom is normal for a
+/// scroll area; running off the left or right edge was the bug.
+fn offscreen_widgets(ctx: &egui::Context, w: f32) -> Vec<(String, f32, f32)> {
+    let mut out = Vec::new();
+    ctx.viewport(|v| {
+        let widgets = &v.prev_pass.widgets;
+        for (_, rects) in widgets.layers() {
+            for r in rects {
+                let info = widgets.info(r.id);
+                let name = info.as_ref().and_then(|i| i.label.clone()).unwrap_or_default();
+                // egui's own panel splitter spans both panes on purpose: it is a
+                // handle, not content, so a wide rect here means nothing.
+                let splitter = info.as_ref().is_some_and(|i| i.role == egui::Role::Splitter);
+                if !name.is_empty() && !splitter && (r.rect.left() < -1.0 || r.rect.right() > w + 1.0) {
+                    out.push((name, r.rect.left().round(), r.rect.right().round()));
+                }
+            }
+        }
+    });
+    // f32 is only partially ordered, so sort by name and then by position.
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.total_cmp(&b.2)));
+    out.dedup();
+    out
+}
+
+#[test]
+fn a_narrow_window_folds_the_sidebar_and_keeps_the_view_reachable() {
+    let ctx = egui::Context::default();
+    // egui only records a widget's label for tests to read when this is on.
+    ctx.all_styles_mut(|s| s.debug.show_interactive_widgets = true);
+    let mut app = ApiCraftApp::new(&ctx, Box::new(FakePlatform), None, None);
+    let id = app.catalog.all_requests()[0].1.id.clone();
+    app.open_request(&id);
+
+    // The window cannot go below 760px (the desktop shell sets that minimum),
+    // so these are the widths a person can actually reach.
+    for w in [760.0, 900.0, 1100.0, 1400.0] {
+        app.sidebar_forced = false;
+        frames(&ctx, &mut app, w, 620.0, Vec::new());
+        frames(&ctx, &mut app, w, 620.0, Vec::new());
+        let off = offscreen_widgets(&ctx, w);
+        assert!(off.is_empty(), "at {w}px wide, widgets sit outside the window: {off:?}");
+        let open = sidebar_is_open(&ctx);
+        assert_eq!(open, w >= 860.0, "sidebar visible at {w}px: {open}");
+    }
+
+    // The rail's logo is how you ask for the sidebar back in a window too narrow
+    // for it. That is a deliberate request, so it comes back - but it takes a
+    // slice, not the whole loaf. Taking the whole window is what used to happen.
+    app.sidebar_forced = false;
+    frames(&ctx, &mut app, 760.0, 620.0, Vec::new());
+    frames(&ctx, &mut app, 760.0, 620.0, Vec::new());
+    click_at(&ctx, &mut app, 760.0, 620.0, egui::pos2(28.0, 27.0));
+    assert!(app.sidebar_forced, "the rail's logo should expand the sidebar even when it will not fit");
+    frames(&ctx, &mut app, 760.0, 620.0, Vec::new());
+    frames(&ctx, &mut app, 760.0, 620.0, Vec::new());
+    assert!(sidebar_is_open(&ctx), "the sidebar came back at the person's request");
+    let off = offscreen_widgets(&ctx, 760.0);
+    assert!(off.is_empty(), "a forced sidebar crowded the view out: {off:?}");
+}
+
+#[test]
+fn tab_strips_wrap_instead_of_running_off_the_edge() {
+    let ctx = egui::Context::default();
+    ctx.all_styles_mut(|s| s.debug.show_interactive_widgets = true);
+    let mut app = ApiCraftApp::new(&ctx, Box::new(FakePlatform), None, None);
+    let id = app.catalog.all_requests()[0].1.id.clone();
+    app.open_request(&id);
+    // Tab labels carry a count suffix when non-empty, so match the head.
+    for w in [760.0, 900.0, 1200.0] {
+        frames(&ctx, &mut app, w, 700.0, Vec::new());
+        frames(&ctx, &mut app, w, 700.0, Vec::new());
+        let mut seen = 0;
+        for label in ["Params", "Headers", "Body", "Auth", "Capture", "Checks", "Docs"] {
+            if find_widget(&ctx, |i| i.label.as_deref().is_some_and(|l| l.starts_with(label))).is_some() {
+                seen += 1;
+            }
+        }
+        assert!(seen >= 5, "expected most of the REST tab strip at {w}px, found {seen}");
+        let off = offscreen_widgets(&ctx, w);
+        assert!(off.is_empty(), "the tab strip overflowed at {w}px: {off:?}");
+    }
+}

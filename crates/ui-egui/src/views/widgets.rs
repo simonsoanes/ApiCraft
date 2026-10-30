@@ -105,8 +105,9 @@ pub enum AlertKind {
 pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, items: &[(T, String, usize)]) -> bool {
     let p = pal(ui);
     let mut changed = false;
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 18.0;
+        ui.spacing_mut().item_spacing.y = 4.0;
         for (value, label, count) in items {
             let on = *current == *value;
             let label_text = if *count > 0 { format!("{label}  {count}") } else { label.clone() };
@@ -124,6 +125,8 @@ pub fn tabs<T: PartialEq + Copy>(ui: &mut Ui, current: &mut T, items: &[(T, Stri
         }
     });
     let rect = ui.min_rect();
+    // min_rect covers every row the strip wrapped onto, so the rule sits under
+    // the whole of it rather than under the first row only.
     ui.painter()
         .line_segment([egui::pos2(rect.left(), rect.bottom() + 3.0), egui::pos2(ui.max_rect().right(), rect.bottom() + 3.0)], Stroke::new(1.0, p.border));
     ui.add_space(8.0);
