@@ -1,6 +1,6 @@
 //! The window: sidebar, the current view, dialogs and toasts.
 
-mod modals;
+pub(crate) mod modals;
 mod request;
 mod response;
 mod sidebar;
@@ -136,7 +136,7 @@ fn welcome(app: &mut ApiCraftApp, ui: &mut Ui) {
                 app.actions.push(Action::NewRequest(None));
             }
             if ui.button(format!("{} Import", icons::UPLOAD)).clicked() {
-                app.modal = Some(Modal::Import { text: String::new(), target: None, url: String::new() });
+                app.modal = Some(Modal::import(None));
             }
         });
     });

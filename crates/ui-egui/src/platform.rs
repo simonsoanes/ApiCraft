@@ -203,7 +203,14 @@ pub enum Job {
     /// Download a definition (OpenAPI, WSDL, OData $metadata, Postman, catalog) to import;
     /// it arrives as `Msg::FileOpened` named by its URL.
     FetchImport {
+        catalog: Box<Catalog>,
+        sources: SourceCtx,
+        /// The collection whose auth and variables apply, if importing into one.
+        collection: Option<String>,
         url: String,
+        auth: Box<apicraft_core::model::Auth>,
+        headers: Vec<apicraft_core::model::KeyValue>,
+        login: Option<Box<apicraft_core::form_login::FormLogin>>,
     },
     /// Fetch an OAuth 2 token; `code` is set when exchanging an authorization code.
     Token {
@@ -257,12 +264,11 @@ pub async fn run_job(job: Job, transport: &dyn Transport, inbox: &Inbox) {
             let result = engine::fetch_schema(&catalog, &request_id, transport).await;
             inbox.post(Msg::SchemaFetched { request_id, result });
         }
-        Job::FetchImport { url } => {
-            let req = apicraft_core::http::HttpRequest { method: "GET".into(), url: url.clone(), timeout_ms: 60_000, ..Default::default() };
-            match transport.send(req).await {
-                Ok(r) if (200..300).contains(&r.status) => inbox.post(Msg::FileOpened { name: url, bytes: r.body }),
-                Ok(r) => inbox.toast(format!("{url} returned {} {}", r.status, r.status_text), true),
-                Err(e) => inbox.toast(format!("Could not download {url}: {e}"), true),
+        Job::FetchImport { mut catalog, sources, collection, url, auth, headers, login } => {
+            fill_sources(&mut catalog, &sources, false, transport, inbox).await;
+            match engine::fetch_definition(*catalog, collection.as_deref(), &url, *auth, headers, login.map(|l| *l), transport).await {
+                Ok(bytes) => inbox.post(Msg::FileOpened { name: url, bytes }),
+                Err(e) => inbox.toast(e, true),
             }
         }
         Job::Token { owner, oauth, code, connect } => {

@@ -420,6 +420,7 @@ pub fn token_request(o: &OAuth2, grant: TokenGrant) -> Result<HttpRequest, Strin
         connect: Default::default(),
         grpc: false,
         timeout_ms: 30_000,
+        no_redirects: false,
     })
 }
 

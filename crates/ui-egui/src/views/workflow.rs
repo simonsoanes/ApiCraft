@@ -16,13 +16,14 @@ pub fn show(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
         let p = pal(ui);
         ui.label(RichText::new("Workflow").size(11.5).color(p.muted));
         if let Some(w) = app.catalog.workflow_mut(id) {
-            ui.add(
+            let name = ui.add(
                 TextEdit::singleline(&mut w.name)
                     .font(egui::FontId::proportional(17.0))
                     .frame(egui::Frame::NONE)
                     .desired_width(ui.available_width().min(520.0))
                     .margin(Margin::ZERO),
             );
+            widgets::replace_default(ui, &name, &w.name);
         }
     });
     let p = pal(ui);
@@ -331,7 +332,8 @@ fn loop_editor(ui: &mut Ui, s: &mut WorkflowStep, remaining: usize) {
         ui.end_row();
         ui.label("Each item as");
         ui.horizontal(|ui| {
-            ui.add(TextEdit::singleline(&mut fe.item).hint_text("item").desired_width(120.0).font(egui::TextStyle::Monospace));
+            let r = ui.add(TextEdit::singleline(&mut fe.item).hint_text("item").desired_width(120.0).font(egui::TextStyle::Monospace));
+            widgets::replace_default(ui, &r, &fe.item);
             ui.label(RichText::new("Steps to repeat").color(p.muted));
             ui.add(egui::DragValue::new(&mut fe.steps).range(1..=remaining.max(1) as u32));
             ui.label(RichText::new("(this one and the ones after it)").size(12.0).color(p.muted));

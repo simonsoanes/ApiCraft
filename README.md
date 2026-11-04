@@ -8,7 +8,7 @@ A Postman/Insomnia-style API client written in Rust. One user interface, built w
 - **Catalogs:** collections, folders and requests, plus environments, workflows and captured variables. Stored as **gzip-compressed JSON**: a file on the desktop, browser storage on the web. Both export and import as `.json.gz` or plain `.json` text.
 - **Collections as folders of text files:** open a folder, or save a collection as one, and it's kept as `collection.json` plus one pretty-printed `.request.json` file per request (subfolders for folders) and a `.workflow.json` per workflow, ready for version control. Files added or edited by hand are picked up; the desktop app reloads when they change on disk. The CLI accepts such a folder in place of a catalog file.
 - **Save as code:** any request as a **curl** or **PowerShell** command (`grpcurl` for gRPC, a `ClientWebSocket` script for WebSockets).
-- **Import** (file picker, drag-and-drop, paste, or URL): Postman collections (v2.0/v2.1) and environments, curl commands, catalog files, and:
+- **Import** (file picker, drag-and-drop, paste, or URL, with auth, headers or a web sign-in form for URLs that need credentials): Postman collections (v2.0/v2.1) and environments, curl commands, catalog files, and:
   - **OpenAPI 3.x / Swagger 2.0** (JSON or YAML). Each operation becomes a request, grouped by tag, with example parameters and bodies built from the schemas, the server URL and path parameters as variables, and security schemes mapped onto auth. Test artifacts are generated: checks per operation (documented status, required fields), a smoke-test workflow over the safe GETs, and CRUD workflows where "create" captures the new id for get/update/delete.
   - **WSDL 1.1:** one SOAP request per operation, with SOAPAction, SOAP version and endpoint from the binding, an example envelope built from the XML Schema, and checks.
   - **OData `$metadata`** (v2-v4, from the URL or a saved file): a folder per entity set with list, get-by-key, create, update (PATCH, or MERGE for v2) and delete requests with example keys and bodies, plus singletons and function/action imports.
@@ -119,6 +119,8 @@ apicraft-agent run --workflow "Token flow" --env httpbin
 apicraft-agent run --request "Get with query"
 apicraft-agent import my.postman_collection.json
 apicraft-agent import https://petstore3.swagger.io/api/v3/openapi.json
+apicraft-agent import https://api.example.com/swagger.json -H "Authorization: Bearer $TOKEN"
+apicraft-agent import https://app.example.com/swagger/v1/swagger.json --user me --password-env APP_PASSWORD
 apicraft-agent import "http://www.dneonline.com/calculator.asmx?WSDL"
 apicraft-agent mcp
 apicraft-agent export --request "Post JSON" --format powershell

@@ -7,6 +7,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 
 use apicraft_core::engine::{apply_outcome, Outcome};
+use apicraft_core::form_login::FormLogin;
 use apicraft_core::model::*;
 use apicraft_core::workflow::{RunSummary, StepReport};
 
@@ -65,15 +66,47 @@ pub enum Confirm {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
-    Code { request_id: String, curl: bool },
-    Environments { selected: Option<String> },
+    Code {
+        request_id: String,
+        curl: bool,
+    },
+    Environments {
+        selected: Option<String>,
+    },
     Runtime,
-    Collection { id: String, tab: CollectionTab },
-    Rename { id: String, value: String },
-    Import { text: String, target: Option<String>, url: String },
-    Confirm { message: String, action: Confirm },
+    Collection {
+        id: String,
+        tab: CollectionTab,
+    },
+    Rename {
+        id: String,
+        value: String,
+    },
+    Import {
+        text: String,
+        target: Option<String>,
+        url: String,
+        /// Sent when downloading from `url`; never saved.
+        auth: Box<Auth>,
+        headers: Vec<KeyValue>,
+        /// Sign in through a web page before downloading; never saved.
+        login: Option<Box<FormLogin>>,
+    },
+    Confirm {
+        message: String,
+        action: Confirm,
+    },
     Settings,
-    StepResult { index: usize },
+    StepResult {
+        index: usize,
+    },
+}
+
+impl Modal {
+    /// An empty import dialog; `target` is the collection to import into.
+    pub fn import(target: Option<String>) -> Self {
+        Modal::Import { text: String::new(), target, url: String::new(), auth: Box::new(Auth::None), headers: Vec::new(), login: None }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

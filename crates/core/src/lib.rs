@@ -11,6 +11,7 @@ pub mod curl_import;
 pub mod engine;
 pub mod extract;
 pub mod folder;
+pub mod form_login;
 pub mod format;
 pub mod git;
 pub mod graphql;

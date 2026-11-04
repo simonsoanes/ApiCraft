@@ -483,7 +483,7 @@ pub fn apply(app: &mut ApiCraftApp, action: Action, ctx: &egui::Context) {
         }
         Action::OpenFiles => app.platform.open_files(app.inbox.clone()),
         Action::ImportText => import_text(app),
-        Action::ImportInto(target) => app.modal = Some(Modal::Import { text: String::new(), target, url: String::new() }),
+        Action::ImportInto(target) => app.modal = Some(Modal::import(target)),
         Action::MoveItem(id, to) => {
             if app.catalog.move_item(&id, &to) {
                 if let MoveTo::Into(container) = to {
@@ -494,14 +494,16 @@ pub fn apply(app: &mut ApiCraftApp, action: Action, ctx: &egui::Context) {
             }
         }
         Action::ImportUrl => {
-            let Some(Modal::Import { url, .. }) = &app.modal else { return };
+            let Some(Modal::Import { url, target, auth, headers, login, .. }) = &app.modal else { return };
             let url = url.trim().to_string();
+            let (collection, auth, login) = (target.clone(), auth.clone(), login.clone());
+            let headers = headers.iter().filter(|h| !h.key.trim().is_empty()).cloned().collect();
             if !(url.starts_with("http://") || url.starts_with("https://")) {
                 app.toast("Enter an http(s) URL to import from", true);
                 return;
             }
             app.toast(format!("Downloading {url}\u{2026}"), false);
-            app.spawn(Job::FetchImport { url });
+            app.spawn(Job::FetchImport { catalog: app.job_catalog(), sources: app.source_ctx(), collection, url, auth, headers, login });
         }
         Action::SaveResponse => {
             let View::Request(id) = &app.view else { return };

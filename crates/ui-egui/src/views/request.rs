@@ -50,13 +50,14 @@ pub fn show(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
             }
         });
         if let Some(r) = app.catalog.find_request_mut(id) {
-            ui.add(
+            let name = ui.add(
                 TextEdit::singleline(&mut r.name)
                     .font(egui::FontId::proportional(17.0))
                     .frame(egui::Frame::NONE)
                     .desired_width(ui.available_width().min(520.0))
                     .margin(Margin::ZERO),
             );
+            widgets::replace_default(ui, &name, &r.name);
         }
     });
     urlbar(app, ui, id);
@@ -160,7 +161,10 @@ fn urlbar(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
                         .margin(Margin::symmetric(8, 7)),
                 );
             } else {
-                ui.add(TextEdit::singleline(&mut r.url).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(url_w).margin(Margin::symmetric(8, 7)));
+                let url = ui.add(
+                    TextEdit::singleline(&mut r.url).hint_text(hint).font(egui::TextStyle::Monospace).desired_width(url_w).margin(Margin::symmetric(8, 7)),
+                );
+                widgets::replace_default(ui, &url, &r.url);
             }
             let is_ws = r.protocol == Protocol::WebSocket;
             // send / connect
@@ -446,6 +450,7 @@ fn editor(app: &mut ApiCraftApp, ui: &mut Ui, id: &str) {
                     native,
                     default_redirect: default_redirect.clone(),
                     now,
+                    can_get_token: true,
                 };
                 let mut open_col = None;
                 widgets::auth_editor(ui, &mut r.auth, &cx, actions, &mut open_col);

@@ -3,7 +3,7 @@
 use apicraft_core::codegen::{self, Target};
 use apicraft_core::format::human_size;
 use apicraft_core::git::{GitReply, GitRequest};
-use apicraft_core::model::{ProxyMode, SourceKind, VarSource};
+use apicraft_core::model::{Auth, ProxyMode, SourceKind, VarSource};
 use egui::{Align, Layout, RichText, TextEdit, Ui};
 
 use super::response;
@@ -14,8 +14,22 @@ use crate::highlight::Lang;
 use crate::icons;
 use crate::theme::pal;
 
+/// The dialog's title bar, which drags it around.
+pub(crate) fn title_bar_id() -> egui::Id {
+    egui::Id::unique("modal-title")
+}
+
+/// How far the open dialog has been dragged from the middle of the window.
+fn offset_id() -> egui::Id {
+    title_bar_id().with("offset")
+}
+
 pub fn show(app: &mut ApiCraftApp, ctx: &egui::Context) {
-    let Some(modal) = app.modal.clone() else { return };
+    let Some(modal) = app.modal.clone() else {
+        // The next dialog opens in the middle again.
+        ctx.data_mut(|d| d.remove::<egui::Vec2>(offset_id()));
+        return;
+    };
     let wide = matches!(modal, Modal::Code { .. } | Modal::Environments { .. } | Modal::Runtime | Modal::Collection { .. } | Modal::StepResult { .. });
     let max_w = ctx.content_rect().width() - 40.0;
     let width = match modal {
@@ -26,7 +40,10 @@ pub fn show(app: &mut ApiCraftApp, ctx: &egui::Context) {
     }
     .min(max_w);
     let max_h = ctx.content_rect().height() - 80.0;
-    let resp = egui::Modal::new(egui::Id::unique("modal")).show(ctx, |ui| {
+    let id = egui::Id::unique("modal");
+    let offset = ctx.data(|d| d.get_temp::<egui::Vec2>(offset_id())).unwrap_or_default();
+    let area = egui::Modal::default_area(id).anchor(egui::Align2::CENTER_CENTER, offset);
+    let resp = egui::Modal::new(id).area(area).show(ctx, |ui| {
         ui.set_width(width);
         ui.set_max_height(max_h);
         match modal {
@@ -41,13 +58,19 @@ pub fn show(app: &mut ApiCraftApp, ctx: &egui::Context) {
             Modal::StepResult { index } => step_result(app, ui, index),
         }
     });
+    // Keep the whole dialog in the window, however far it was dragged.
+    let room = ((ctx.content_rect().size() - resp.response.rect.size()) / 2.0).max(egui::Vec2::ZERO);
+    ctx.data_mut(|d| {
+        let o = d.get_temp_mut_or_default::<egui::Vec2>(offset_id());
+        *o = o.clamp(-room, room);
+    });
     if resp.should_close() {
         app.modal = None;
     }
 }
 
 fn head(app: &mut ApiCraftApp, ui: &mut Ui, title: &str) {
-    ui.horizontal(|ui| {
+    let bar = ui.horizontal(|ui| {
         ui.heading(title);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if widgets::icon_button(ui, icons::X, "Close").clicked() {
@@ -55,7 +78,28 @@ fn head(app: &mut ApiCraftApp, ui: &mut Ui, title: &str) {
             }
         });
     });
-    ui.add_space(6.0);
+    let drag = ui.interact(bar.response.rect, title_bar_id(), egui::Sense::drag());
+    // Measured from the press, so the dialog stays under the pointer even if
+    // frames are slow or it was held against the edge of the window.
+    let start_id = offset_id().with("start");
+    if drag.drag_started() {
+        ui.ctx().data_mut(|d| {
+            let offset = d.get_temp::<egui::Vec2>(offset_id()).unwrap_or_default();
+            d.insert_temp(start_id, offset);
+        });
+    }
+    if drag.dragged() {
+        if let Some(moved) = ui.input(|i| Some(i.pointer.latest_pos()? - i.pointer.press_origin()?)) {
+            ui.ctx().data_mut(|d| {
+                let start = d.get_temp::<egui::Vec2>(start_id).unwrap_or_default();
+                d.insert_temp(offset_id(), start + moved);
+            });
+        }
+    }
+    let cursor = if drag.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab };
+    drag.on_hover_cursor(cursor);
+    ui.separator();
+    ui.add_space(4.0);
 }
 
 /// Right-aligned dialog buttons. The row is kept to one line: a bare
@@ -123,7 +167,8 @@ fn environments(app: &mut ApiCraftApp, ui: &mut Ui, selected: Option<String>) {
             let ApiCraftApp { catalog, source_values, source_errors, bitwarden, actions, fetching_sources, .. } = app;
             let Some(e) = catalog.environments.iter_mut().find(|e| e.id == id) else { return };
             ui.label(RichText::new("Name").strong());
-            ui.add(TextEdit::singleline(&mut e.name).desired_width(f32::INFINITY));
+            let r = ui.add(TextEdit::singleline(&mut e.name).desired_width(f32::INFINITY));
+            widgets::replace_default(ui, &r, &e.name);
             ui.add_space(6.0);
             let room = (ui.ctx().content_rect().height() - 280.0).max(340.0);
             egui::ScrollArea::vertical().max_height(room).show(ui, |ui| {
@@ -230,7 +275,8 @@ fn sources_editor(
                         }
                         ui.separator();
                         ui.label(RichText::new("or a custom field's name:").size(11.5).color(p.faint));
-                        ui.add(TextEdit::singleline(&mut s.field).desired_width(160.0));
+                        let r = ui.add(TextEdit::singleline(&mut s.field).desired_width(160.0));
+                        widgets::replace_default(ui, &r, &s.field);
                     });
                 }
             }
@@ -375,7 +421,8 @@ fn collection(app: &mut ApiCraftApp, ui: &mut Ui, id: &str, tab: CollectionTab) 
     egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| match t {
         CollectionTab::General => {
             ui.label(RichText::new("Name").strong());
-            ui.add(TextEdit::singleline(&mut c.name).desired_width(f32::INFINITY));
+            let r = ui.add(TextEdit::singleline(&mut c.name).desired_width(f32::INFINITY));
+            widgets::replace_default(ui, &r, &c.name);
             ui.add_space(6.0);
             ui.label(RichText::new("Description").strong());
             ui.add(TextEdit::multiline(&mut c.description).desired_rows(5).desired_width(f32::INFINITY));
@@ -388,7 +435,7 @@ fn collection(app: &mut ApiCraftApp, ui: &mut Ui, id: &str, tab: CollectionTab) 
         CollectionTab::Auth => {
             help(ui, "Requests set to \u{201c}Inherit\u{201d} use this.");
             ui.add_space(4.0);
-            let cx = AuthCtx { owner: id, allow_inherit: false, inherited: None, native, default_redirect, now };
+            let cx = AuthCtx { owner: id, allow_inherit: false, inherited: None, native, default_redirect, now, can_get_token: true };
             let mut ignore = None;
             widgets::auth_editor(ui, &mut c.auth, &cx, actions, &mut ignore);
         }
@@ -632,7 +679,7 @@ fn rename(app: &mut ApiCraftApp, ui: &mut Ui) {
     if let Some(Modal::Rename { value, .. }) = &mut app.modal {
         let r = ui.add(TextEdit::singleline(value).desired_width(f32::INFINITY));
         if !r.has_focus() && !r.lost_focus() {
-            r.request_focus();
+            widgets::focus_selected(ui, &r, value.chars().count());
         }
         if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             save = true;
@@ -663,9 +710,17 @@ fn import(app: &mut ApiCraftApp, ui: &mut Ui) {
     head(app, ui, "Import");
     let p = pal(ui);
     let cols: Vec<(String, String)> = app.catalog.collections.iter().map(|c| (c.id.clone(), c.name.clone())).collect();
+    let col_auth: Vec<(String, String)> = app
+        .catalog
+        .collections
+        .iter()
+        .map(|c| (c.id.clone(), Auth::KINDS.iter().find(|(k, _)| *k == c.auth.key()).map(|(_, l)| l.to_string()).unwrap_or_default()))
+        .collect();
+    let (native, default_redirect, now) = (app.platform.native_grpc(), app.platform.default_redirect_uri(), app.platform.now_ms());
+    let mut acts = Vec::new();
     let source_id = egui::Id::unique("import-source");
     let mut source = ui.ctx().data(|d| d.get_temp::<ImportSource>(source_id)).unwrap_or(ImportSource::File);
-    let Some(Modal::Import { text, target, url }) = &mut app.modal else { return };
+    let Some(Modal::Import { text, target, url, auth, headers, login }) = &mut app.modal else { return };
 
     ui.horizontal(|ui| {
         ui.label(RichText::new("Import into").strong());
@@ -710,6 +765,39 @@ fn import(app: &mut ApiCraftApp, ui: &mut Ui) {
                 }
                 ui.add_space(4.0);
                 help(ui, "Relative server URLs in an OpenAPI document are resolved against this address. For a WSDL, include ?wsdl; for OData, use the service\u{2019}s $metadata URL.");
+                ui.add_space(6.0);
+                // Only a collection being imported into has auth to inherit.
+                if target.is_none() && **auth == Auth::Inherit {
+                    **auth = Auth::None;
+                }
+                let inherited = target.as_ref().and_then(|t| col_auth.iter().find(|c| &c.0 == t)).map(|c| (c.0.as_str(), c.1.clone()));
+                egui::CollapsingHeader::new(RichText::new(format!("{} Authentication", icons::KEY)).strong()).id_salt("import-auth").show(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                        let cx = AuthCtx { owner: "import", allow_inherit: target.is_some(), inherited, native, default_redirect, now, can_get_token: false };
+                        let mut open_collection = None;
+                        widgets::auth_editor(ui, auth, &cx, &mut acts, &mut open_collection);
+                        if let Some(c) = open_collection {
+                            acts.push(Action::CollectionSettings(c));
+                        }
+                        ui.add_space(8.0);
+                        let mut sign_in = login.is_some();
+                        if ui.checkbox(&mut sign_in, "Sign in through a web page first").changed() {
+                            *login = sign_in.then(Default::default);
+                        }
+                        if let Some(l) = login {
+                            ui.add_space(4.0);
+                            widgets::field(ui, "Username", &mut l.username, false, "Leave blank if the page only asks for a password");
+                            widgets::field(ui, "Password", &mut l.password, true, "");
+                            widgets::field(ui, "Sign-in page", &mut l.page, false, "Optional: found from the address above");
+                        }
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Headers").strong());
+                        widgets::kv_table(ui, "import-headers", headers, "Header", "Value");
+                        ui.add_space(4.0);
+                        let cookies = if native { "" } else { " In a browser, signing in and Cookie headers need the local agent." };
+                        help(ui, &format!("Used for this download only, and not saved. A sign-in with several steps, or one built with JavaScript, can\u{2019}t be filled in here: sign in with your browser, copy the Cookie header of a request from its developer tools, and add it as a header.{cookies}"));
+                    });
+                });
             }
             ImportSource::Paste => {
                 ui.add(
@@ -737,6 +825,7 @@ fn import(app: &mut ApiCraftApp, ui: &mut Ui) {
             app.modal = None;
         }
     });
+    app.actions.append(&mut acts);
     if go {
         app.actions.push(match source {
             ImportSource::File => Action::OpenFiles,

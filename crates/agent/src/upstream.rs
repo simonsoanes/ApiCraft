@@ -71,13 +71,14 @@ pub fn send(req: HttpRequest) -> Result<HttpResponse, String> {
         }
         builder = builder.header(k.as_str(), v.as_str());
     }
+    let follow = !req.no_redirects;
     // No body at all (rather than `Content-Length: 0`) when there's nothing to send.
     let resp = if req.body.is_empty() {
         let r = builder.body(ureq::SendBody::none()).map_err(|e| format!("invalid request: {e}"))?;
-        agent().run(crate::connect::configure(agent(), r, &req.connect)?)
+        agent().run(redirects(crate::connect::configure(agent(), r, &req.connect)?, follow))
     } else {
         let r = builder.body(req.body).map_err(|e| format!("invalid request: {e}"))?;
-        agent().run(crate::connect::configure(agent(), r, &req.connect)?)
+        agent().run(redirects(crate::connect::configure(agent(), r, &req.connect)?, follow))
     }
     .map_err(|e| format!("{e}"))?;
     let status = resp.status();
@@ -91,6 +92,14 @@ pub fn send(req: HttpRequest) -> Result<HttpResponse, String> {
         trailers: Vec::new(),
         elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
     })
+}
+
+fn redirects<S: ureq::AsSendBody>(req: http::Request<S>, follow: bool) -> http::Request<S> {
+    if follow {
+        req
+    } else {
+        agent().configure_request(req).max_redirects(0).build()
+    }
 }
 
 fn header_pairs(h: &http::HeaderMap) -> Vec<(String, String)> {

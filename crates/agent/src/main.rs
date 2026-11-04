@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use apicraft_agent::{default_catalog_path, folders, now_ms, server, NativeTransport};
 use apicraft_core::codegen::{self, Target};
 use apicraft_core::engine::{self, apply_outcome};
-use apicraft_core::http::HttpRequest;
-use apicraft_core::model::Catalog;
+use apicraft_core::form_login::FormLogin;
+use apicraft_core::model::{Auth, Catalog, KeyValue};
 use apicraft_core::store;
 use apicraft_core::workflow;
 
@@ -19,7 +19,8 @@ Fizl ApiCraft agent
 USAGE:
   apicraft-agent [serve] [--port 8787] [--web DIR] [--data FILE] [--allow-origin URL]...
   apicraft-agent run [catalog] (--workflow NAME | --request NAME) [--env NAME] [--save]
-  apicraft-agent import <file or URL> [-o catalog.json.gz]
+  apicraft-agent import <file or URL> [-H 'Name: value']... [--password-env VAR [--user NAME] [--sign-in-page URL]]
+                        [-o catalog.json.gz]
   apicraft-agent export [catalog] (--request NAME | --workflow NAME) [--format curl|powershell]
   apicraft-agent mcp [--catalog FILE]
 
@@ -29,7 +30,10 @@ USAGE:
            --save writes captured variables and tokens back to the catalog file.
   import   Import a Postman collection/environment, OpenAPI/Swagger (JSON or YAML)
            WSDL, GraphQL introspection JSON or OData $metadata, from a file or URL,
-           and merge it into a catalog file.
+           and merge it into a catalog file. -H adds a header when downloading, such
+           as 'Authorization: Bearer ...' or 'Cookie: ...' for a URL behind a sign-in.
+           --password-env signs in through the site's web form first, with the
+           password from that environment variable.
   export   Print a request as a curl or PowerShell command, or a workflow as a
            Bash or PowerShell script that runs its steps, captures and checks.
   mcp      Run Fizl ApiCraft as an MCP server on stdio, so an agent can list, send,
@@ -309,13 +313,20 @@ fn cmd_run(mut args: Args) -> Result<bool, String> {
 
 fn cmd_import(mut args: Args) -> Result<bool, String> {
     let out = args.value(&["-o", "--output"]).unwrap_or_else(|| default_catalog_path().display().to_string());
+    let mut headers = Vec::new();
+    while let Some(h) = args.value(&["-H", "--header"]) {
+        let (k, v) = h.split_once(':').ok_or_else(|| format!("{h} isn't a header: use 'Name: value'"))?;
+        headers.push(KeyValue::new(k.trim(), v.trim()));
+    }
+    let username = args.value(&["--user"]).unwrap_or_default();
+    let page = args.value(&["--sign-in-page"]).unwrap_or_default();
+    let login = match args.value(&["--password-env"]) {
+        Some(var) => Some(FormLogin { page, username, password: std::env::var(&var).map_err(|_| format!("the environment variable {var} isn't set"))? }),
+        None => None,
+    };
     let input = args.positional().ok_or("import needs a file or URL")?;
     let bytes = if input.starts_with("http://") || input.starts_with("https://") {
-        let resp = apicraft_agent::upstream::send(HttpRequest { method: "GET".into(), url: input.clone(), ..Default::default() })?;
-        if !(200..300).contains(&resp.status) {
-            return Err(format!("{input} returned {} {}", resp.status, resp.status_text));
-        }
-        resp.body
+        pollster::block_on(engine::fetch_definition(Catalog::default(), None, &input, Auth::None, headers, login, &NativeTransport))?
     } else {
         std::fs::read(&input).map_err(|e| format!("reading {input}: {e}"))?
     };

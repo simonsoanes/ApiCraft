@@ -8,10 +8,11 @@
 
 use crate::auth::{self, TokenGrant, TokenResult};
 use crate::extract::{self, CheckResult, ResponseView};
+use crate::form_login::{self, FormLogin};
 use crate::grpc::{self, GrpcResult};
 use crate::http::{ConnectOptions, HttpRequest, HttpResponse, Transport};
 use crate::ids::new_id;
-use crate::model::{Auth, Catalog, Check, Compression, Extraction, GrantType, KeyValue, Protocol, SendOptions, VarScope};
+use crate::model::{Auth, Catalog, Check, Collection, Compression, Extraction, GrantType, Item, KeyValue, Protocol, Request, SendOptions, VarScope};
 use crate::prepare::{multipart, prepare, Prepared, PreparedBody};
 use crate::url::Url;
 use crate::vars::Vars;
@@ -116,6 +117,7 @@ pub fn build_wire(catalog: &Catalog, request_id: &str, workflow_vars: &[KeyValue
         grpc: prepared.grpc.is_some() && native_grpc,
         timeout_ms: 60_000,
         connect: catalog.network.connect_options(&vars),
+        no_redirects: false,
     };
     Ok(Wire { prepared, http, auth, auth_owner: owner, vars })
 }
@@ -370,6 +372,84 @@ pub async fn execute(
     out
 }
 
+/// Downloads a definition to import, sent like any other request: the
+/// catalog's proxy and certificates apply, `{{variables}}` are filled in, and
+/// `auth` can be anything a request can use. `Auth::Inherit` takes the auth of
+/// `collection`. With `login`, it signs in through the site's form first. The
+/// request only exists in this copy of the catalog, so credentials given for
+/// an import aren't saved.
+pub async fn fetch_definition(
+    mut catalog: Catalog,
+    collection: Option<&str>,
+    url: &str,
+    auth: Auth,
+    mut headers: Vec<KeyValue>,
+    login: Option<FormLogin>,
+    transport: &dyn Transport,
+) -> Result<Vec<u8>, String> {
+    let signed_in = login.is_some();
+    if let Some(login) = login {
+        let col = collection.and_then(|c| catalog.collection(c));
+        let vars = Vars::for_request(&catalog, col, &[], transport.now_ms());
+        let target = vars.apply(url);
+        let login = FormLogin { page: vars.apply(&login.page), username: vars.apply(&login.username), password: vars.apply(&login.password) };
+        let jar = form_login::sign_in(&login, &target, &catalog.network.connect_options(&vars), transport).await.map_err(|e| {
+            if e.contains(url) {
+                e
+            } else {
+                format!("Could not sign in for {url}: {e}")
+            }
+        })?;
+        if let Some(cookies) = jar.header(&Url::parse(&target)?) {
+            match headers.iter_mut().find(|h| h.key.eq_ignore_ascii_case("cookie")) {
+                Some(h) => h.value = format!("{}; {cookies}", h.value),
+                None => headers.push(KeyValue::new("Cookie", cookies)),
+            }
+        }
+    }
+    let mut req = Request::new("Import", Protocol::Rest);
+    req.url = url.to_string();
+    req.auth = auth;
+    req.headers = headers;
+    let id = req.id.clone();
+    match collection.and_then(|c| catalog.collections.iter_mut().find(|x| x.id == c)) {
+        Some(c) => c.items.push(Item::Request(req)),
+        None => {
+            let mut c = Collection::new("Import");
+            c.items.push(Item::Request(req));
+            catalog.collections.push(c);
+        }
+    }
+    let out = execute(&catalog, &id, &[], &[], &[], transport).await;
+    if let Some(e) = out.error {
+        return Err(format!("Could not download {url}: {e}"));
+    }
+    let Some(resp) = out.response else {
+        return Err(format!("Could not download {url}: no response"));
+    };
+    let notes: String = out.warnings.iter().chain(out.extract_errors.iter()).map(|n| format!(" ({n})")).collect();
+    if matches!(resp.status, 401 | 403) {
+        return Err(format!("{url} returned {} {}: it needs credentials that it accepts{notes}", resp.status, resp.status_text));
+    }
+    if !(200..300).contains(&resp.status) {
+        return Err(format!("{url} returned {} {}{notes}", resp.status, resp.status_text));
+    }
+    if is_web_page(&resp) && signed_in {
+        return Err(format!("{url} still returned a web page after signing in{notes}"));
+    }
+    if is_web_page(&resp) {
+        return Err(format!("{url} returned a web page, not a definition: it's probably a sign-in page, so it needs credentials that it accepts{notes}"));
+    }
+    Ok(resp.body)
+}
+
+/// Sites that want a sign-in usually redirect to a form, which arrives as a
+/// success. Servers that label a definition as HTML by mistake are let through.
+fn is_web_page(resp: &HttpResponse) -> bool {
+    let start = resp.body.trim_ascii_start();
+    resp.content_type().to_ascii_lowercase().contains("html") && !(start.starts_with(b"{") || start.starts_with(b"[") || start.starts_with(b"<?xml"))
+}
+
 /// What a GraphQL endpoint (by introspection) or an OData service (by its
 /// `$metadata`) says it offers.
 #[derive(Debug, Clone, PartialEq)]
@@ -529,6 +609,7 @@ async fn execute_mcp(
         body: serde_json::to_vec_pretty(&messages).unwrap_or_default(),
         grpc: false,
         timeout_ms: 0,
+        no_redirects: false,
     });
     let view = ResponseView { status: if out.error.is_some() { 500 } else { 200 }, headers: &[], body: &out.body_text, elapsed_ms: elapsed };
     for e in req.extract.iter().chain(extra_extract.iter()).filter(|e| e.enabled && !e.variable.trim().is_empty()) {
@@ -586,6 +667,118 @@ pub(crate) mod tests {
             body: body.as_bytes().to_vec(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn definitions_download_with_auth_headers_and_connect_options() {
+        let mut cat = Catalog::default();
+        cat.network.verify_tls = false;
+        let before = cat.clone();
+        let url = "https://api.test/odata/$metadata?$format=xml";
+        let t = Scripted::new(vec![reply(200, &[("content-type", "application/json")], "{}")]);
+        let auth = Auth::Bearer { token: "T".into() };
+        let headers = vec![KeyValue::new("Cookie", "session=abc")];
+        let body = pollster::block_on(fetch_definition(cat.clone(), None, url, auth, headers, None, &t)).unwrap();
+        assert_eq!(body, b"{}");
+        let sent = t.sent.borrow();
+        assert_eq!(sent[0].url, url);
+        assert!(sent[0].connect.insecure);
+        assert!(sent[0].headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer T"));
+        assert!(sent[0].headers.iter().any(|(k, v)| k == "Cookie" && v == "session=abc"));
+        assert_eq!(cat, before);
+    }
+
+    #[test]
+    fn definitions_can_use_the_target_collections_auth() {
+        let mut cat = Catalog::default();
+        let mut col = Collection::new("c");
+        col.auth = Auth::Bearer { token: "COL".into() };
+        let cid = col.id.clone();
+        cat.collections.push(col);
+        let t = Scripted::new(vec![reply(200, &[], "{}")]);
+        pollster::block_on(fetch_definition(cat, Some(&cid), "https://api.test/d", Auth::Inherit, Vec::new(), None, &t)).unwrap();
+        assert!(t.sent.borrow()[0].headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer COL"));
+    }
+
+    #[test]
+    fn a_sign_in_page_is_not_a_definition() {
+        let fetch = |r: HttpResponse| {
+            let t = Scripted::new(vec![r]);
+            pollster::block_on(fetch_definition(Catalog::default(), None, "https://api.test/d", Auth::None, Vec::new(), None, &t))
+        };
+        let html = [("content-type", "text/html; charset=utf-8")];
+        assert!(fetch(reply(200, &html, "<!doctype html><form>")).unwrap_err().contains("sign-in page"));
+        assert!(fetch(reply(401, &[], "")).unwrap_err().contains("credentials"));
+        // Mislabelled, but still a definition.
+        assert!(fetch(reply(200, &html, "  {\"openapi\":\"3.0.0\"}")).is_ok());
+        assert!(fetch(reply(200, &html, "<?xml version=\"1.0\"?><definitions/>")).is_ok());
+    }
+
+    const LOGIN_PAGE: &str = r#"<form method="post" action="/Account/Login"><input type="hidden" name="returnUrl" value="/swagger.json">
+        <input type="password" name="password"><input name="__RequestVerificationToken" type="hidden" value="TOKEN"></form>"#;
+
+    fn sign_in_with(replies: Vec<HttpResponse>, password: &str) -> (Result<Vec<u8>, String>, Vec<HttpRequest>) {
+        let t = Scripted::new(replies);
+        let login = FormLogin { password: password.into(), ..Default::default() };
+        let r = pollster::block_on(fetch_definition(Catalog::default(), None, "https://app.test/swagger.json", Auth::None, Vec::new(), Some(login), &t));
+        (r, t.sent.into_inner())
+    }
+
+    #[test]
+    fn signs_in_through_a_form_then_downloads_with_its_cookies() {
+        let html = [("content-type", "text/html"), ("set-cookie", "anti=A; path=/; httponly")];
+        let (r, sent) = sign_in_with(
+            vec![
+                reply(302, &[("location", "/Account/Login?returnUrl=%2Fswagger.json")], ""),
+                reply(200, &html, LOGIN_PAGE),
+                reply(302, &[("location", "/swagger.json"), ("set-cookie", "session=S; path=/; secure; httponly")], ""),
+                reply(200, &[("content-type", "application/json")], "{}"),
+                reply(200, &[("content-type", "application/json")], r#"{"openapi":"3.0.0"}"#),
+            ],
+            "p&ss word",
+        );
+        assert_eq!(r.unwrap(), br#"{"openapi":"3.0.0"}"#);
+        assert!(sent[..4].iter().all(|s| s.no_redirects), "redirects are followed by hand, to keep their cookies");
+        let header = |s: &HttpRequest, name: &str| s.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone());
+
+        let post = &sent[2];
+        assert_eq!((post.method.as_str(), post.url.as_str()), ("POST", "https://app.test/Account/Login"));
+        assert_eq!(header(post, "Cookie").as_deref(), Some("anti=A"));
+        let body = String::from_utf8(post.body.clone()).unwrap();
+        for part in ["__RequestVerificationToken=TOKEN", "returnUrl=%2Fswagger.json", "password=p%26ss"] {
+            assert!(body.contains(part), "{part} in {body}");
+        }
+
+        assert_eq!((sent[3].method.as_str(), sent[3].body.is_empty()), ("GET", true), "the password doesn't follow the redirect");
+        assert_eq!(header(&sent[4], "Cookie").as_deref(), Some("anti=A; session=S"));
+    }
+
+    #[test]
+    fn a_refused_sign_in_says_so_without_the_password() {
+        let html = [("content-type", "text/html")];
+        let (r, sent) = sign_in_with(vec![reply(200, &html, LOGIN_PAGE), reply(200, &html, LOGIN_PAGE)], "hunter2");
+        let e = r.unwrap_err();
+        assert!(e.contains("check the username and password") && !e.contains("hunter2"), "{e}");
+        assert_eq!(sent.len(), 2);
+    }
+
+    #[test]
+    fn passwords_are_not_sent_to_a_form_that_would_expose_them() {
+        let html = [("content-type", "text/html")];
+        let page = |form: &str| reply(200, &html, &format!(r#"{form}<input type="password" name="p"></form>"#));
+        for (form, why) in [(r#"<form action="/l">"#, "in the address"), (r#"<form method="post" action="http://app.test/l">"#, "unencrypted")] {
+            let (r, sent) = sign_in_with(vec![page(form)], "hunter2");
+            assert!(r.unwrap_err().contains(why));
+            assert_eq!(sent.len(), 1, "nothing was posted");
+        }
+    }
+
+    #[test]
+    fn signing_in_is_skipped_when_the_definition_is_open() {
+        let json = [("content-type", "application/json")];
+        let (r, sent) = sign_in_with(vec![reply(200, &json, "{}"), reply(200, &json, "{}")], "hunter2");
+        assert_eq!(r.unwrap(), b"{}");
+        assert!(sent.iter().all(|s| s.method == "GET" && s.body.is_empty()));
     }
 
     #[test]

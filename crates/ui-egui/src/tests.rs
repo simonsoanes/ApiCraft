@@ -137,6 +137,7 @@ fn outcome_for(app: &ApiCraftApp, id: &str, body: &str, content_type: &str) -> O
             body: b"{\"a\":1}".to_vec(),
             grpc: false,
             timeout_ms: 0,
+            no_redirects: false,
         }),
         response: Some(HttpResponse {
             status: 201,
@@ -224,7 +225,7 @@ fn renders_every_view_tab_and_dialog() {
         Modal::Collection { id: col.clone(), tab: CollectionTab::Auth },
         Modal::Collection { id: col.clone(), tab: CollectionTab::Files },
         Modal::Rename { id: col.clone(), value: "x".into() },
-        Modal::Import { text: String::new(), target: None, url: String::new() },
+        Modal::import(None),
         Modal::Confirm { message: "Delete?".into(), action: Confirm::Delete(col) },
         Modal::Settings,
         Modal::StepResult { index: 0 },
@@ -535,4 +536,98 @@ fn tab_strips_wrap_instead_of_running_off_the_edge() {
         let off = offscreen_widgets(&ctx, w);
         assert!(off.is_empty(), "the tab strip overflowed at {w}px: {off:?}");
     }
+}
+
+#[test]
+fn typing_replaces_the_suggested_name() {
+    let ctx = egui::Context::default();
+    let mut app = ApiCraftApp::new(&ctx, Box::new(FakePlatform), None, None);
+    app.actions.push(crate::actions::Action::NewCollection);
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    frame_with(&ctx, &mut app, vec![egui::Event::Text("Orders".into())]);
+    let Some(Modal::Rename { value, .. }) = &app.modal else { panic!("expected the rename dialog") };
+    assert_eq!(value, "Orders");
+}
+
+#[test]
+fn clicking_a_default_name_selects_it_but_a_real_name_keeps_the_cursor() {
+    let ctx = egui::Context::default();
+    let mut app = ApiCraftApp::new(&ctx, Box::new(FakePlatform), None, None);
+    let mut col = Collection::new("c");
+    let default = Request::new("New request", Protocol::Rest);
+    let chosen = Request::new("Orders", Protocol::Rest);
+    let (default_id, chosen_id) = (default.id.clone(), chosen.id.clone());
+    col.items.push(Item::Request(default));
+    col.items.push(Item::Request(chosen));
+    app.catalog.collections.push(col);
+
+    // egui keeps widget details (used to find the field) only with this on.
+    ctx.all_styles_mut(|s| s.debug.show_interactive_widgets = true);
+    let mut type_into = |id: &str, name: &str| {
+        // As clicking the request in the sidebar would.
+        ctx.memory_mut(|m| m.stop_text_input());
+        app.view = View::Request(id.to_string());
+        frame(&ctx, &mut app, 1280.0, 800.0);
+        let pos = find_widget(&ctx, |i| i.current_text_value.as_deref() == Some(name)).expect("the name field");
+        // Apart from the last click, which would otherwise make this a double-click.
+        let pos = pos + egui::vec2(name.len() as f32 * 8.0, 0.0);
+        let ev = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        frame_with(&ctx, &mut app, vec![egui::Event::PointerMoved(pos)]);
+        frame_with(&ctx, &mut app, vec![ev(true)]);
+        // Held for a few frames, as a real click is.
+        frame_with(&ctx, &mut app, Vec::new());
+        frame_with(&ctx, &mut app, Vec::new());
+        frame_with(&ctx, &mut app, vec![ev(false)]);
+        frame_with(&ctx, &mut app, Vec::new());
+        frame_with(&ctx, &mut app, vec![egui::Event::Text("X".into())]);
+        app.catalog.find_request(id).unwrap().1.name.clone()
+    };
+    assert_eq!(type_into(&default_id, "New request"), "X");
+    let edited = type_into(&chosen_id, "Orders");
+    assert!(edited.len() == "Orders".len() + 1 && edited.contains('X'), "typed into the name, got {edited}");
+}
+
+#[test]
+fn dialogs_drag_by_their_title_bar_and_reopen_in_the_middle() {
+    let ctx = egui::Context::default();
+    let mut app = ApiCraftApp::new(&ctx, Box::new(FakePlatform), None, None);
+    let col = app.catalog.collections[0].id.clone();
+    let dialog = Modal::Collection { id: col, tab: CollectionTab::Variables };
+    let bar = |ctx: &egui::Context| ctx.read_response(crate::views::modals::title_bar_id()).expect("a title bar").rect;
+
+    app.modal = Some(dialog.clone());
+    // A new dialog takes a few frames to learn its size.
+    for _ in 0..3 {
+        frame(&ctx, &mut app, 1280.0, 800.0);
+    }
+    let start = bar(&ctx);
+    let by = egui::vec2(-150.0, 90.0);
+    drag(&ctx, &mut app, start.center(), start.center() + by);
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    assert!(app.modal.is_some(), "dragging must not close the dialog");
+    let moved = bar(&ctx).center() - start.center();
+    assert!((moved - by).length() < 2.0, "moved by {moved:?}, wanted {by:?}");
+
+    // And back the other way, up and to the right.
+    let at = bar(&ctx).center();
+    let back = egui::vec2(100.0, -120.0);
+    drag(&ctx, &mut app, at, at + back);
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    let moved = bar(&ctx).center() - at;
+    assert!((moved - back).length() < 2.0, "moved by {moved:?}, wanted {back:?}");
+
+    // Dragged far past the edge, it stays in the window.
+    let at = bar(&ctx).center();
+    drag(&ctx, &mut app, at, egui::pos2(-600.0, at.y));
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    assert!(bar(&ctx).left() >= 0.0, "dragged off the window: {:?}", bar(&ctx));
+
+    app.modal = None;
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    app.modal = Some(dialog);
+    for _ in 0..3 {
+        frame(&ctx, &mut app, 1280.0, 800.0);
+    }
+    assert!((bar(&ctx).center() - start.center()).length() < 1.0, "a new dialog opens in the middle: {:?} vs {:?}", bar(&ctx), start);
 }

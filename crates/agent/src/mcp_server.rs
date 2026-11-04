@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use apicraft_core::codegen::{self, Target};
 use apicraft_core::engine::{self, apply_outcome};
-use apicraft_core::http::HttpRequest;
 use apicraft_core::model::*;
 use apicraft_core::store;
 use apicraft_core::workflow;
@@ -79,7 +78,7 @@ fn tools() -> Value {
         { "name": "delete_request", "description": "Delete a saved request.",
           "inputSchema": schema(json!({ "request": request }), &["request"]), "annotations": { "destructiveHint": true } },
         { "name": "import_definition", "description": "Import an OpenAPI/Swagger definition (with generated checks and workflows), a WSDL, a GraphQL introspection result, an OData $metadata document, a Postman collection/environment or a curl command, from text or a URL.",
-          "inputSchema": schema(json!({ "url": { "type": "string" }, "text": { "type": "string" }, "collection": { "type": "string", "description": "For curl commands: the collection to add to" } }), &[]) },
+          "inputSchema": schema(json!({ "url": { "type": "string" }, "headers": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Headers for downloading from url, such as Authorization or Cookie when it needs credentials" }, "text": { "type": "string" }, "collection": { "type": "string", "description": "For curl commands: the collection to add to" } }), &[]) },
         { "name": "list_environments", "description": "List environments and their variables, and which is active.",
           "inputSchema": schema(json!({}), &[]), "annotations": { "readOnlyHint": true } },
         { "name": "set_environment", "description": "Make an environment active (or none with an empty name).",
@@ -330,11 +329,13 @@ impl McpServer {
                 let mut cat = self.load()?;
                 let (bytes, source) = match (arg(args, "url"), args.get("text").and_then(|t| t.as_str())) {
                     (Some(url), _) => {
-                        let resp = crate::upstream::send(HttpRequest { method: "GET".into(), url: url.to_string(), ..Default::default() })?;
-                        if !(200..300).contains(&resp.status) {
-                            return Err(format!("{url} returned {} {}", resp.status, resp.status_text));
-                        }
-                        (resp.body, Some(url.to_string()))
+                        let headers = args
+                            .get("headers")
+                            .and_then(|h| h.as_object())
+                            .map(|h| h.iter().filter_map(|(k, v)| Some(KeyValue::new(k.as_str(), v.as_str()?))).collect())
+                            .unwrap_or_default();
+                        let bytes = pollster::block_on(engine::fetch_definition(cat.clone(), None, url, Auth::None, headers, None, &NativeTransport))?;
+                        (bytes, Some(url.to_string()))
                     }
                     (None, Some(text)) => (text.as_bytes().to_vec(), None),
                     (None, None) => return Err("give a url or text".into()),

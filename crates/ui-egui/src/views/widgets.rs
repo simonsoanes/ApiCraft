@@ -218,9 +218,57 @@ fn focus_at_end(ui: &Ui, resp: &egui::Response, len: usize) {
     }
 }
 
-fn field(ui: &mut Ui, label: &str, value: &mut String, password: bool, hint: &str) {
+/// Focuses a text field with all of its text selected, so typing replaces it.
+pub fn focus_selected(ui: &Ui, resp: &egui::Response, len: usize) {
+    resp.request_focus();
+    if let Some(mut state) = egui::text_edit::TextEditState::load(ui.ctx(), resp.id) {
+        let all = egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(len));
+        state.cursor.set_char_range(Some(all));
+        state.store(ui.ctx(), resp.id);
+    }
+}
+
+/// Text the app fills in by itself, rather than anything a person chose.
+const DEFAULT_TEXT: [&str; 11] = [
+    "New request",
+    "New workflow",
+    "New collection",
+    "New folder",
+    "My collection",
+    "Imported requests",
+    "X-API-Key",
+    "Bearer",
+    "password",
+    "item",
+    "http://127.0.0.1:8787/mcp",
+];
+
+fn is_default_text(value: &str) -> bool {
+    let numbered_environment = value.strip_prefix("Environment ").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    numbered_environment || DEFAULT_TEXT.contains(&value)
+}
+
+/// Call after adding a text field: if it holds a default when it gets focus,
+/// by click or by keyboard, its text is selected so typing replaces it. A
+/// second click still places the cursor, to edit the default instead.
+pub fn replace_default(ui: &Ui, resp: &egui::Response, value: &str) {
+    let pending = resp.id.with("replace-default");
+    if resp.gained_focus() && is_default_text(value) {
+        ui.ctx().data_mut(|d| d.insert_temp(pending, true));
+    }
+    // A press moves the cursor for as long as it's held, so wait for the release.
+    if ui.ctx().data(|d| d.get_temp::<bool>(pending).is_some()) && !ui.input(|i| i.pointer.any_down()) {
+        ui.ctx().data_mut(|d| d.remove::<bool>(pending));
+        if resp.has_focus() {
+            focus_selected(ui, resp, value.chars().count());
+        }
+    }
+}
+
+pub fn field(ui: &mut Ui, label: &str, value: &mut String, password: bool, hint: &str) {
     ui.label(RichText::new(label).strong().size(12.5));
-    ui.add(TextEdit::singleline(value).password(password).hint_text(hint).desired_width(f32::INFINITY));
+    let r = ui.add(TextEdit::singleline(value).password(password).hint_text(hint).desired_width(f32::INFINITY));
+    replace_default(ui, &r, value);
     ui.add_space(4.0);
 }
 
@@ -261,6 +309,8 @@ pub struct AuthCtx<'a> {
     pub native: bool,
     pub default_redirect: String,
     pub now: u64,
+    /// Whether "Get new token" has somewhere to store the token.
+    pub can_get_token: bool,
 }
 
 pub fn auth_editor(ui: &mut Ui, auth: &mut Auth, cx: &AuthCtx, actions: &mut Vec<Action>, open_collection: &mut Option<String>) {
@@ -382,7 +432,7 @@ pub fn auth_editor(ui: &mut Ui, auth: &mut Auth, cx: &AuthCtx, actions: &mut Vec
                                 o.refresh_token.clear();
                                 o.expires_at = 0;
                             }
-                            if o.grant != GrantType::Manual && accent_button(ui, "Get new token").clicked() {
+                            if cx.can_get_token && o.grant != GrantType::Manual && accent_button(ui, "Get new token").clicked() {
                                 actions.push(Action::OAuthGet(cx.owner.to_string()));
                             }
                         });

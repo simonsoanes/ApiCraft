@@ -24,6 +24,10 @@ pub struct HttpRequest {
     /// senders (the desktop app and the agent) can honour these.
     #[serde(default, skip_serializing_if = "ConnectOptions::is_default")]
     pub connect: ConnectOptions,
+    /// Return a redirect instead of following it, to read the cookies it
+    /// sets. Only native senders (the desktop app and the agent) can do this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_redirects: bool,
 }
 
 /// How to connect: see [`crate::model::NetworkSettings`]. Certificates and
