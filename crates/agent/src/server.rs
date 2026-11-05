@@ -188,6 +188,16 @@ fn cors(resp: &mut Resp, origin: &Option<String>) {
     }
 }
 
+/// The catalog file for the browser app. A file that can't be read is an
+/// error, not a missing file: the app would save over a missing one.
+fn read_catalog(path: &Path) -> Resp {
+    match crate::folders::load(path) {
+        Ok((cat, _)) => Resp::new(200, "application/gzip", apicraft_core::store::to_gzip(&cat)),
+        Err(_) if !path.exists() => Resp::text(404, "no catalog file yet"),
+        Err(e) => Resp::text(500, &format!("could not read {e}")),
+    }
+}
+
 fn route(req: &Req, cfg: &Config) -> Resp {
     if !host_ok(req) {
         return Resp::text(403, "unexpected Host header");
@@ -267,10 +277,7 @@ fn api_route(req: &Req, api: &str, cfg: &Config, cross_origin: bool) -> Resp {
                 Err(e) => Resp::json(502, &ProxyError { error: e }),
             }
         }
-        ("GET", "catalog") => match crate::folders::load(&cfg.data_file) {
-            Ok((cat, _)) => Resp::new(200, "application/gzip", apicraft_core::store::to_gzip(&cat)),
-            Err(_) => Resp::text(404, "no catalog file yet"),
-        },
+        ("GET", "catalog") => read_catalog(&cfg.data_file),
         ("PUT", "catalog") => {
             let cat = match apicraft_core::store::decode(&req.body) {
                 Ok(c) => c.into_catalog(),
@@ -500,5 +507,23 @@ fn static_file(url_path: &str, cfg: &Config, accepts_gzip: bool) -> Resp {
             r
         }
         Err(_) => Resp::text(404, "not found"),
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn an_unreadable_catalog_is_not_reported_as_missing() {
+        let dir = std::env::temp_dir().join(format!("apicraft-server-{}", apicraft_core::ids::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("catalog.json.gz");
+        assert_eq!(read_catalog(&file).status, 404);
+        std::fs::write(&file, b"not a catalog").unwrap();
+        assert_eq!(read_catalog(&file).status, 500);
+        std::fs::write(&file, apicraft_core::store::to_gzip(&Default::default())).unwrap();
+        assert_eq!(read_catalog(&file).status, 200);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

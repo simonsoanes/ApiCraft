@@ -27,7 +27,8 @@ struct State {
     use_agent: Cell<bool>,
     mirror: Cell<bool>,
     agent_url: RefCell<String>,
-    /// Nothing was stored in this browser yet (the sample catalog is showing).
+    /// Nothing is stored in this browser yet (the sample catalog is showing),
+    /// so the agent's catalog, if there is one, should replace it.
     fresh: Cell<bool>,
 }
 
@@ -76,7 +77,6 @@ fn detect(state: Rc<State>, inbox: Inbox, announce: bool) {
     wasm_bindgen_futures::spawn_local(async move {
         let extra = state.agent_url.borrow().clone();
         let found = net::detect_agent(Some(extra)).await;
-        state.detecting.set(false);
         if announce {
             match &found {
                 Some(a) => inbox.toast(format!("Agent found at {}", a.base), false),
@@ -86,13 +86,21 @@ fn detect(state: Rc<State>, inbox: Inbox, announce: bool) {
         let base = found.as_ref().map(|a| a.base.clone());
         *state.agent.borrow_mut() = found;
         if let (Some(base), true) = (base, state.fresh.get()) {
-            state.fresh.set(false);
-            if let Ok(Some(bytes)) = net::agent_load_catalog(&base).await {
-                if let Ok(imported) = store::decode(&bytes) {
+            let loaded = net::agent_load_catalog(&base).await.and_then(|bytes| bytes.map(|b| store::decode(&b)).transpose());
+            match loaded {
+                Ok(Some(imported)) => {
                     inbox.post(Msg::ReplaceCatalog { catalog: Box::new(imported.into_catalog()), note: "Loaded the catalog from the agent's file".into() });
                 }
+                Ok(None) => {}
+                // Whatever is in that file, mirroring would overwrite it unread.
+                Err(e) => {
+                    state.mirror.set(false);
+                    inbox.toast(format!("Could not read the agent's catalog ({e}), so changes here won't be mirrored to it"), true);
+                }
             }
+            state.fresh.set(false);
         }
+        state.detecting.set(false);
         inbox.post(Msg::Refresh);
     });
 }
@@ -151,8 +159,13 @@ impl Platform for WebPlatform {
     }
 
     fn save_catalog(&self, catalog: &Catalog) -> Result<(), String> {
-        self.state.fresh.set(false);
         dom::storage_set(CATALOG_KEY, &store::to_storage_string(catalog))?;
+        // The agent's catalog may be about to replace this, so it can't go over
+        // the agent's file yet.
+        if self.state.fresh.get() && self.state.detecting.get() {
+            return Ok(());
+        }
+        self.state.fresh.set(false);
         if let (Some(base), true) = (self.state.agent_base(), self.state.mirror.get()) {
             let gz = store::to_gzip(catalog);
             wasm_bindgen_futures::spawn_local(async move {

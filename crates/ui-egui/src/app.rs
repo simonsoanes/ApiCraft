@@ -288,10 +288,9 @@ impl ApiCraftApp {
         theme::install_fonts(ctx, ui_font);
         let (tx, rx) = channel();
         let inbox = Inbox::new(tx, ctx.clone());
-        let (catalog, fresh) = match platform.load_catalog() {
-            Some(c) => (c, false),
-            None => (crate::sample::catalog(), true),
-        };
+        // The samples are only saved once they're edited: stored untouched, they
+        // would pass for the user's own catalog from then on.
+        let catalog = platform.load_catalog().unwrap_or_else(crate::sample::catalog);
         let mut prefs_v = Prefs { theme: ThemeChoice::System, sidebar_open: true };
         if let Some(v) = prefs.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
             prefs_v.theme = match v.get("theme").and_then(|t| t.as_str()) {
@@ -305,7 +304,7 @@ impl ApiCraftApp {
             platform,
             inbox,
             rx,
-            saved_hash: if fresh { 0 } else { catalog_hash(&catalog) },
+            saved_hash: catalog_hash(&catalog),
             history: undo::History::new(&catalog),
             text_menu: textmenu::TextMenu::default(),
             source_values: HashMap::new(),

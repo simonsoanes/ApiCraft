@@ -10,6 +10,11 @@ use crate::platform::{Inbox, Job, Level, Platform, Status, WsConn};
 
 struct FakePlatform;
 
+thread_local! {
+    /// How many times this test's app saved its catalog.
+    static SAVES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 impl Platform for FakePlatform {
     fn status(&self) -> Status {
         Status { label: "Test".into(), detail: "headless".into(), level: Level::Good }
@@ -22,6 +27,7 @@ impl Platform for FakePlatform {
         None
     }
     fn save_catalog(&self, _catalog: &Catalog) -> Result<(), String> {
+        SAVES.with(|s| s.set(s.get() + 1));
         Ok(())
     }
     fn storage_description(&self) -> String {
@@ -630,4 +636,17 @@ fn dialogs_drag_by_their_title_bar_and_reopen_in_the_middle() {
         frame(&ctx, &mut app, 1280.0, 800.0);
     }
     assert!((bar(&ctx).center() - start.center()).length() < 1.0, "a new dialog opens in the middle: {:?} vs {:?}", bar(&ctx), start);
+}
+
+#[test]
+fn the_samples_are_only_saved_once_edited() {
+    let ctx = egui::Context::default();
+    let mut app = ApiCraftApp::new(&ctx, Box::new(FakePlatform), None, None);
+    frame(&ctx, &mut app, 1280.0, 800.0);
+    app.flush();
+    assert_eq!(SAVES.with(|s| s.get()), 0, "saved, the samples would pass for the user's own catalog");
+
+    app.catalog.collections[0].name = "Mine now".into();
+    app.flush();
+    assert_eq!(SAVES.with(|s| s.get()), 1, "an edit must be saved");
 }
